@@ -9,6 +9,7 @@ date: 7 Oct 2018
 from __future__ import absolute_import, division, print_function
 
 import pickle
+import argparse
 import itertools
 
 import numpy as np
@@ -22,21 +23,38 @@ class ObjectDetectionAnalysis(object):
                  iou_thresholds=None,
                  confidence_thresholds=None):
 
-        print("Image count: %d" % len(truth_boxes.keys()))
+        # If no confidence thresholds are provided, sample some linearly.
+        if iou_thresholds is None:
+
+            iou_thresholds = np.linspace(0.9, 0.99, 3)
+
+        # If no confidence thresholds are provided, sample some logistically.
+        if confidence_thresholds is None:
+
+            def sigmoid(x):
+                return 1 / (1 + np.exp(-x))
+
+            confidence_thresholds = sigmoid(np.linspace(-10, 10, 20))
+
+        image_count = len(truth_boxes.keys())
+
+        print("Image count: %d" % image_count)
 
         # Create a dict to map the analyses to images.
         iou_confidence_analysis = list()
 
         # Iterate over each image in the dataset, and evaluate performance.
-        for image_name in truth_boxes.keys():
+        for image_number, image_name in enumerate(truth_boxes.keys()):
 
-            print("Processing: %s" % image_name)
+            print("Processing: %s (%d/%d)" % (image_name,
+                                              image_number,
+                                              image_count))
 
             # Run the analysis on this image.
             analyses = self._analyse_detections(truth_boxes[image_name],
-                                                inferred_boxes[image_name],
-                                                iou_thresholds=iou_thresholds,
-                                                confidence_thresholds=confidence_thresholds)
+                inferred_boxes[image_name],
+                iou_thresholds=iou_thresholds,
+                confidence_thresholds=confidence_thresholds)
 
             # For each IoU and confidence point, extract the counts and stats.
             for analysis in analyses:
@@ -71,19 +89,6 @@ class ObjectDetectionAnalysis(object):
                             iou_thresholds=None,
                             confidence_thresholds=None):
 
-        # If no confidence thresholds are provided, sample some linearly.
-        if iou_thresholds is None:
-
-            iou_thresholds = np.linspace(0.5, 0.95, 5)
-
-        # If no confidence thresholds are provided, sample some logistically.
-        if confidence_thresholds is None:
-
-            def sigmoid(x):
-                return 1 / (1 + np.exp(-x))
-
-            confidence_thresholds = sigmoid(np.linspace(-10, 10, 100))
-
         # Instantiate a list to hold design-performance points.
         design_points = list()
 
@@ -117,10 +122,9 @@ class ObjectDetectionAnalysis(object):
         inferred_boxes = self._filter_boxes_by_confidence(inferred_boxes,
                                                           confidence_threshold)
 
-        all_pred_indices = range(len(inferred_boxes))
-        all_gt_indices = range(len(truth_boxes))
+        # If there are no inferred boxes, all truth boxes are false negatives.
+        if not inferred_boxes:
 
-        if len(all_pred_indices) == 0:
             true_postives = 0
             false_positives = 0
             false_negatives = len(truth_boxes)
@@ -128,7 +132,8 @@ class ObjectDetectionAnalysis(object):
                     'false_positives': false_positives,
                     'false_negatives': false_negatives}
 
-        if len(all_gt_indices) == 0:
+        # If there are no truth boxes, all inferred boxes are false positives.
+        if not truth_boxes:
             true_postives = 0
             false_positives = len(inferred_boxes)
             false_negatives = 0
@@ -136,6 +141,7 @@ class ObjectDetectionAnalysis(object):
                     'false_positives': false_positives,
                     'false_negatives': false_negatives}
 
+        # Declare a list to hold inferred-truth-IoU triples.
         overlaps = list()
 
         # For each combination of inferred and truth boxes...
@@ -389,7 +395,7 @@ def loadDetectionsDataFromPickle(pickle_file):
         return detections_dict
 
 
-def extract_boxes(detections_dict, score_limit=0.0):
+def extract_boxes_frcnn(detections_dict, score_limit=0.0):
     '''
     Extracts boxes from a given detection dict. Rewrite this for different
     detection dictionary storing architectures.
@@ -431,14 +437,79 @@ def extract_boxes(detections_dict, score_limit=0.0):
     return(inferred_boxes, truth_boxes)
 
 
-if __name__ == "__main__":
+def extract_boxes_yolo3(detections_dict, score_limit=0.0):
+    '''
+    Extracts boxes from a given detection dict. Rewrite this for different
+    detection dictionary storing architectures.
+    '''
 
-    pickle_file = 'detections.pickle'
-    detections_dict = loadDetectionsDataFromPickle(pickle_file)
+    inferred_boxes = dict()
 
-    # These dicts share a key structure.
-    inferred_boxes, truth_boxes = extract_boxes(detections_dict,
-                                                score_limit=0.01)
+    # Zip over the inferred dectections dict values.
+    for image_name, boxes, in zip(detections_dict['image_name'],
+                                  detections_dict['detection_boxes']):
+
+        scored_boxes = list()
+
+        # Iterate over the list of inferred boxes and scores...
+        for box in boxes:
+
+            if box:
+
+                score = box[4]
+
+                # ...and if the score exceeds the limit...
+                if score >= score_limit:
+
+                    # ....create a mapping dict, and append it to the list.
+                    scored_box_dict = {"box": box[0:4],
+                                       "confidence": score}
+
+                    scored_boxes.append(scored_box_dict)
+
+        # Finally, map the scored boxes list to the image name.
+        inferred_boxes[image_name] = scored_boxes
+
+    truth_boxes = dict()
+
+    # Iterate over the truth box dict values.
+    for image_name, boxes in zip(detections_dict['image_name'],
+                                 detections_dict['ground_truth_boxes']):
+
+        classless_boxes = list()
+
+        for box in boxes:
+
+            if box:
+
+                classless_boxes.append([float(b) for b in box[0:4]])
+
+        # Map each list of boxes to the cooresponding image name.
+        truth_boxes[image_name] = classless_boxes
+
+    return(inferred_boxes, truth_boxes)
+
+
+def main(unused_argv):
+
+    detections_dict = loadDetectionsDataFromPickle(FLAGS.pickle_file)
+
+    if FLAGS.pickle_flavor is "frcnn":
+
+        (inferred_boxes,
+         truth_boxes) = extract_boxes_frcnn(detections_dict,
+                                            score_limit=FLAGS.score_limit)
+
+    elif FLAGS.pickle_flavor is "yolo3":
+
+        (inferred_boxes,
+         truth_boxes) = extract_boxes_yolo3(detections_dict,
+                                            score_limit=FLAGS.score_limit)
+
+    else:
+
+        print(FLAGS.pickle_flavor + " is not a recognized pickle flavor!")
+        return(1)
 
     # Run the analysis.
     detection_analysis = ObjectDetectionAnalysis(truth_boxes, inferred_boxes)
@@ -446,10 +517,51 @@ if __name__ == "__main__":
     # Compute the statistics.
     stat_df = detection_analysis.compute_statistics()
 
-    # Display the dataframe.
-    with pd.option_context('display.max_rows', None,
-                           'display.max_columns', None):
-        print(stat_df)
+    if FLAGS.print_dataframe:
 
-    # Plot the PR curve.
-    detection_analysis.plot_pr_curve()
+        # Display the dataframe.
+        with pd.option_context('display.max_rows', None,
+                               'display.max_columns', None):
+            print(stat_df)
+
+    if FLAGS.plot_pr_curve:
+
+        # Plot the PR curve.
+        detection_analysis.plot_pr_curve()
+
+
+if __name__ == '__main__':
+
+    parser = argparse.ArgumentParser()
+
+    # parser.add_argument("--pickle_file",
+    #                     default='..\\object_detection_analysis\\object_detection_analysis\\detections_faster_rcnn_e9_templog0.pickle',
+    #                     help="The pickle file to use.")
+
+    # parser.add_argument("--pickle_flavor",
+    #                     default="frcnn",
+    #                     help="One of [frcnn, yolo3]. Indicates pickle format.")
+
+    parser.add_argument("--pickle_file",
+                        default= '..\\object_detection_analysis\\object_detection_analysis\\yolo3_detections.pickle',
+                        help="The pickle file to use.")
+
+    parser.add_argument("--pickle_flavor",
+                        default="yolo3",
+                        help="One of [frcnn, yolo3]. Indicates pickle format.")
+
+    parser.add_argument("--score_limit",
+                        default=0.01,
+                        help="All inferred boxes w/ lower scores are removed.")
+
+    parser.add_argument("--print_dataframe",
+                        default=True,
+                        help="If True, prints a pandas dataframe of analysis.")
+
+    parser.add_argument("--plot_pr_curve",
+                        default=True,
+                        help="If True, plots the PR curve.")
+
+    FLAGS, unparsed = parser.parse_known_args()
+
+    main(unparsed)
