@@ -8,19 +8,18 @@ date: 7 Oct 2018
 
 from __future__ import absolute_import, division, print_function
 
+import pickle
 import itertools
 
-import matplotlib
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import seaborn as sns
-import pickle
+import matplotlib.pyplot as plt
 
 
 class ObjectDetectionAnalysis(object):
 
     def __init__(self, truth_boxes, inferred_boxes,
+                 iou_thresholds=None,
                  confidence_thresholds=None):
 
         print("Image count: %d" % len(truth_boxes.keys()))
@@ -33,12 +32,11 @@ class ObjectDetectionAnalysis(object):
 
             print("Processing: %s" % image_name)
 
-            # start = timer()
-
+            # Run the analysis on this image.
             analyses = self._analyse_detections(truth_boxes[image_name],
-                                                inferred_boxes[image_name])
-            # end = timer()
-            # print(end - start)
+                                                inferred_boxes[image_name],
+                                                iou_thresholds=iou_thresholds,
+                                                confidence_thresholds=confidence_thresholds)
 
             # For each IoU and confidence point, extract the counts and stats.
             for analysis in analyses:
@@ -70,18 +68,21 @@ class ObjectDetectionAnalysis(object):
                                         columns=headers)
 
     def _analyse_detections(self, truth_boxes, inferred_boxes,
+                            iou_thresholds=None,
                             confidence_thresholds=None):
 
-        iou_thresholds = np.linspace(0.5, 0.90, 3)
+        # If no confidence thresholds are provided, sample some linearly.
+        if iou_thresholds is None:
 
+            iou_thresholds = np.linspace(0.5, 0.95, 5)
+
+        # If no confidence thresholds are provided, sample some logistically.
         if confidence_thresholds is None:
 
             def sigmoid(x):
                 return 1 / (1 + np.exp(-x))
 
             confidence_thresholds = sigmoid(np.linspace(-10, 10, 100))
-
-            # print(confidence_thresholds)
 
         # Instantiate a list to hold design-performance points.
         design_points = list()
@@ -216,6 +217,9 @@ class ObjectDetectionAnalysis(object):
                                  "confidence_threshold",
                                  "iou_threshold"]]
 
+        # Store the data in
+        self.df = data
+
         # Sum the data over images by confidence and IoU.
         grouped = data.groupby(["confidence_threshold", "iou_threshold"]).sum()
 
@@ -234,18 +238,24 @@ class ObjectDetectionAnalysis(object):
 
         df = self.compute_statistics()
 
-        # Extract IoU thresholds.
-        iou_thresholds = df.iou_threshold.unique()
+        # Extract unique IoU thresholds from the raw df.
+        iou_thresholds = self.df["iou_threshold"].unique()
 
+        # Start a new plot.
         ax = plt.gca()
 
+        # Iterate over each unique IoU threshold.
         for iou_threshold in iou_thresholds:
 
-            ax.scatter(df["recall"], df["precision"], label=iou_threshold)
+            # Get only the rows where the IoU threshold is this IoU threshold.
+            ax.scatter(df.xs(iou_threshold, level=1)["recall"],
+                       df.xs(iou_threshold, level=1)["precision"],
+                       label=str(iou_threshold))
 
         ax.set_xlabel('recall')
         ax.set_ylabel('precision')
-        ax.set_title('Precision-Recall curve for')
+        ax.set_title('Precision-Recall Curve')
+        ax.legend()
         ax.set_xlim([0.0, 1.2])
         ax.set_ylim([0.0, 1.2])
 
@@ -363,12 +373,6 @@ class ObjectDetectionAnalysis(object):
 
         return(filtered_boxes)
 
-COLORS = [
-    '#1f77b4', '#aec7e8', '#ff7f0e', '#ffbb78', '#2ca02c',
-    '#98df8a', '#d62728', '#ff9896', '#9467bd', '#c5b0d5',
-    '#8c564b', '#c49c94', '#e377c2', '#f7b6d2', '#7f7f7f',
-    '#c7c7c7', '#bcbd22', '#dbdb8d', '#17becf', '#9edae5']
-
 
 def loadDetectionsDataFromPickle(pickle_file):
 
@@ -425,29 +429,6 @@ def extract_boxes(detections_dict, score_limit=0.0):
         truth_boxes[image_name] = boxes
 
     return(inferred_boxes, truth_boxes)
-
-
-def plot_pr_curve(precisions,
-                  recalls,
-                  category='Satellite',
-                  label=None,
-                  color=None,
-                  ax=None):
-    """Simple plotting helper function"""
-
-    if ax is None:
-        plt.figure(figsize=(10, 8))
-        ax = plt.gca()
-
-    if color is None:
-        color = COLORS[0]
-    ax.scatter(recalls, precisions, label=label, s=20, color=color)
-    ax.set_xlabel('recall')
-    ax.set_ylabel('precision')
-    ax.set_title('Precision-Recall curve for {}'.format(category))
-    ax.set_xlim([0.0, 1.3])
-    ax.set_ylim([0.0, 1.2])
-    return ax
 
 
 if __name__ == "__main__":
