@@ -26,7 +26,7 @@ class ObjectDetectionAnalysis(object):
         # If no confidence thresholds are provided, sample some linearly.
         if iou_thresholds is None:
 
-            iou_thresholds = np.linspace(0.9, 0.99, 3)
+            iou_thresholds = np.linspace(0.01, 0.99, 5)
 
         # If no confidence thresholds are provided, sample some logistically.
         if confidence_thresholds is None:
@@ -34,7 +34,7 @@ class ObjectDetectionAnalysis(object):
             def sigmoid(x):
                 return 1 / (1 + np.exp(-x))
 
-            confidence_thresholds = sigmoid(np.linspace(-10, 10, 20))
+            confidence_thresholds = sigmoid(np.linspace(-100, 100, 200))
 
         image_count = len(truth_boxes.keys())
 
@@ -46,12 +46,15 @@ class ObjectDetectionAnalysis(object):
         # Iterate over each image in the dataset, and evaluate performance.
         for image_number, image_name in enumerate(truth_boxes.keys()):
 
-            print("Processing: %s (%d/%d)" % (image_name,
-                                              image_number,
-                                              image_count))
+            if image_number % 100 == 0:
+
+                print("Processing: %s (%d/%d)" % (image_name,
+                                                  image_number,
+                                                  image_count))
 
             # Run the analysis on this image.
-            analyses = self._analyse_detections(truth_boxes[image_name],
+            analyses = self._analyse_detections(
+                truth_boxes[image_name],
                 inferred_boxes[image_name],
                 iou_thresholds=iou_thresholds,
                 confidence_thresholds=confidence_thresholds)
@@ -227,7 +230,7 @@ class ObjectDetectionAnalysis(object):
         self.df = data
 
         # Sum the data over images by confidence and IoU.
-        grouped = data.groupby(["confidence_threshold", "iou_threshold"]).sum()
+        grouped = data.groupby(["iou_threshold", "confidence_threshold"]).sum()
 
         # Iterate over each statistic function.
         for statisitic_name, statistic_fn in statistics_dict.items():
@@ -254,8 +257,8 @@ class ObjectDetectionAnalysis(object):
         for iou_threshold in iou_thresholds:
 
             # Get only the rows where the IoU threshold is this IoU threshold.
-            ax.scatter(df.xs(iou_threshold, level=1)["recall"],
-                       df.xs(iou_threshold, level=1)["precision"],
+            ax.scatter(df.xs(iou_threshold, level=0)["recall"],
+                       df.xs(iou_threshold, level=0)["precision"],
                        label=str(iou_threshold))
 
         ax.set_xlabel('recall')
@@ -510,6 +513,15 @@ def main(unused_argv):
 
         print(FLAGS.pickle_flavor + " is not a recognized pickle flavor!")
         return(1)
+
+    # for i, key in enumerate(truth_boxes.keys()):
+    #     print("----------------")
+    #     print(inferred_boxes[key])
+    #     print(truth_boxes[key])
+
+    #     if i is 100:
+
+    #         explode
 
     # Run the analysis.
     detection_analysis = ObjectDetectionAnalysis(truth_boxes, inferred_boxes)
